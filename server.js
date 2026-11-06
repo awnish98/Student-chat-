@@ -1,6 +1,18 @@
 const express=require("express"),http=require("http"),{Server}=require("socket.io"),path=require("path");
 const app=express(),server=http.createServer(app),io=new Server(server);
+const path = require("path");
 
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.get("/style.css", (req, res) => {
+  res.sendFile(path.join(__dirname, "style.css"));
+});
+
+app.get("/app.js", (req, res) => {
+  res.sendFile(path.join(__dirname, "app.js"));
+});
 const rooms=new Map(),MAX=12;
 const clean=(s,n)=>String(s||"").replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,n);
 io.on("connection",s=>{
