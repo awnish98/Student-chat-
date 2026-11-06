@@ -1,33 +1,117 @@
-const express=require("express"),http=require("http"),{Server}=require("socket.io"),path=require("path");
-const app=express(),server=http.createServer(app),io=new Server(server);
+const express = require("express");
+const http = require("http");
 const path = require("path");
+const { Server } = require("socket.io");
 
-app.get("/", (req, res) => {
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*" },
+  maxHttpBufferSize: 1e6
+});
+
+const PORT = process.env.PORT || 3000;
+const rooms = new Map();
+const MAX_ROOM_USERS = 30;
+
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  if (/^\/(server\.js|package\.json|package-lock\.json|\.env)(\/|$)/i.test(req.path)) return res.sendStatus(404);
+  next();
+});
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", app: "AWNISH CHAT" });
+});
+app.use(express.static(__dirname, { dotfiles: "deny", index: false }));
+
+app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-app.get("/style.css", (req, res) => {
-  res.sendFile(path.join(__dirname, "style.css"));
+function clean(value, max) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, max);
+}
+
+function sendMembers(room) {
+  const members = rooms.get(room);
+  if (!members) return;
+  io.to(room).emit("members", [...members.entries()].map(([id, name]) => ({ id, name })));
+}
+
+io.on("connection", (socket) => {
+  socket.on("join-room", (data, callback = () => {}) => {
+    const name = clean(data?.name, 24);
+    const room = clean(data?.room, 16).toUpperCase();
+
+    if (name.length < 2 || !/^[A-Z0-9-]{4,16}$/.test(room)) {
+      return callback({ ok: false, error: "नाम और 4-16 अक्षर का Room Code लिखें।" });
+    }
+
+    if (!rooms.has(room)) rooms.set(room, new Map());
+    const members = rooms.get(room);
+
+    if (members.size >= MAX_ROOM_USERS && !members.has(socket.id)) {
+      return callback({ ok: false, error: "यह रूम भर चुका है।" });
+    }
+
+    if (socket.data.room) {
+      const oldRoom = socket.data.room;
+      socket.leave(oldRoom);
+      rooms.get(oldRoom)?.delete(socket.id);
+      sendMembers(oldRoom);
+      if (rooms.get(oldRoom)?.size === 0) rooms.delete(oldRoom);
+    }
+
+    socket.data.name = name;
+    socket.data.room = room;
+    socket.join(room);
+    members.set(socket.id, name);
+    sendMembers(room);
+    socket.to(room).emit("system-message", `${name} रूम में आए।`);
+    callback({ ok: true, room, id: socket.id });
+  });
+
+  socket.on("chat-message", (raw) => {
+    const room = socket.data.room;
+    const message = clean(raw, 600);
+    if (!room || !message) return;
+    io.to(room).emit("chat-message", {
+      id: `${Date.now()}-${socket.id}`,
+      name: socket.data.name,
+      message,
+      time: new Date().toISOString()
+    });
+  });
+
+  // WebRTC signalling relay. Media itself is exchanged peer-to-peer.
+  socket.on("call-signal", (data) => {
+    const room = socket.data.room;
+    if (!room || !data || typeof data.to !== "string") return;
+    if (!rooms.get(room)?.has(data.to)) return;
+    io.to(data.to).emit("call-signal", {
+      from: socket.id,
+      name: socket.data.name,
+      description: data.description,
+      candidate: data.candidate,
+      kind: data.kind
+    });
+  });
+
+  socket.on("disconnect", () => {
+    const room = socket.data.room;
+    if (!room) return;
+    const members = rooms.get(room);
+    if (!members) return;
+    members.delete(socket.id);
+    socket.to(room).emit("system-message", `${socket.data.name || "एक सदस्य"} रूम से चले गए।`);
+    sendMembers(room);
+    if (members.size === 0) rooms.delete(room);
+  });
 });
 
-app.get("/app.js", (req, res) => {
-  res.sendFile(path.join(__dirname, "app.js"));
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`AWNISH CHAT ready on port ${PORT}`);
 });
-const rooms=new Map(),MAX=12;
-const clean=(s,n)=>String(s||"").replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,n);
-io.on("connection",s=>{
- s.on("join-room",({roomCode,displayName},cb=()=>{})=>{
-  const r=clean(roomCode,12).toUpperCase(),name=clean(displayName,24);
-  if(!/^[A-Z0-9-]{4,12}$/.test(r)||name.length<2)return cb({ok:false,error:"Enter a name and a 4–12 character room code."});
-  if(!rooms.has(r))rooms.set(r,new Map());const m=rooms.get(r);
-  if(m.size>=MAX&&!m.has(s.id))return cb({ok:false,error:"Room is full (12 people maximum)."});
-  if(s.data.room)s.leave(s.data.room);
-  s.data.room=r;s.data.name=name;s.join(r);m.set(s.id,name);
-  io.to(r).emit("members",[...m].map(([id,name])=>({id,name})));
-  s.to(r).emit("system-message",name+" joined the room.");cb({ok:true,roomCode:r});
- });
- s.on("chat-message",raw=>{const r=s.data.room,msg=clean(raw,600);if(!r||!msg)return;io.to(r).emit("chat-message",{name:s.data.name,message:msg});});
- s.on("meeting-signal",p=>{if(s.data.room&&p&&typeof p.to==="string"&&rooms.get(s.data.room)?.has(p.to))io.to(p.to).emit("meeting-signal",{from:s.id,description:p.description,candidate:p.candidate});});
- s.on("disconnect",()=>{const r=s.data.room;if(r){rooms.get(r)?.delete(s.id);s.to(r).emit("system-message",(s.data.name||"Someone")+" left.");io.to(r).emit("members",[...(rooms.get(r)||[])].map(([id,name])=>({id,name})));}});
-});
-server.listen(process.env.PORT||3000,()=>console.log("AWNISH CHAT ready"));
