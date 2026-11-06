@@ -1,6 +1,6 @@
 const express=require("express"),http=require("http"),{Server}=require("socket.io"),path=require("path");
 const app=express(),server=http.createServer(app),io=new Server(server);
-app.use(express.static(path.join(__dirname,"public")));
+
 const rooms=new Map(),MAX=12;
 const clean=(s,n)=>String(s||"").replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,n);
 io.on("connection",s=>{
